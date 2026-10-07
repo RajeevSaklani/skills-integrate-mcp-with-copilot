@@ -3,6 +3,36 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const authButton = document.getElementById("auth-button");
+  const authStatus = document.getElementById("auth-status");
+  const teacherNotice = document.getElementById("teacher-notice");
+  const loginDialog = document.getElementById("login-dialog");
+  const loginForm = document.getElementById("login-form");
+  const loginError = document.getElementById("login-error");
+  let teacherCredentials = null;
+
+  function authorizationHeader(username, password) {
+    const bytes = new TextEncoder().encode(`${username}:${password}`);
+    const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+    return `Basic ${btoa(binary)}`;
+  }
+
+  function updateAuthUI() {
+    const isTeacher = teacherCredentials !== null;
+    authStatus.textContent = isTeacher ? `Teacher: ${teacherCredentials.username}` : "Student view";
+    authButton.textContent = isTeacher ? "Log out" : "Teacher login";
+    signupForm.hidden = !isTeacher;
+    teacherNotice.hidden = isTeacher;
+  }
+
+  function teacherFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("Authorization", authorizationHeader(
+      teacherCredentials.username,
+      teacherCredentials.password
+    ));
+    return fetch(url, { ...options, headers });
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -12,6 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Clear loading message
       activitiesList.innerHTML = "";
+      activitySelect.innerHTML = '<option value="">-- Select an activity --</option>';
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -29,8 +60,10 @@ document.addEventListener("DOMContentLoaded", () => {
               <ul class="participants-list">
                 ${details.participants
                   .map(
-                    (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
+                    (email) => `<li>
+                      <span class="participant-email">${email}</span>
+                      ${teacherCredentials ? `<button class="delete-btn" data-activity="${name}" data-email="${email}" aria-label="Unregister ${email}">Remove</button>` : ""}
+                    </li>`
                   )
                   .join("")}
               </ul>
@@ -74,7 +107,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const email = button.getAttribute("data-email");
 
     try {
-      const response = await fetch(
+      const response = await teacherFetch(
         `/activities/${encodeURIComponent(
           activity
         )}/unregister?email=${encodeURIComponent(email)}`,
@@ -92,6 +125,11 @@ document.addEventListener("DOMContentLoaded", () => {
         // Refresh activities list to show updated participants
         fetchActivities();
       } else {
+        if (response.status === 401) {
+          teacherCredentials = null;
+          updateAuthUI();
+          fetchActivities();
+        }
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
       }
@@ -118,7 +156,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const activity = document.getElementById("activity").value;
 
     try {
-      const response = await fetch(
+      const response = await teacherFetch(
         `/activities/${encodeURIComponent(
           activity
         )}/signup?email=${encodeURIComponent(email)}`,
@@ -137,6 +175,11 @@ document.addEventListener("DOMContentLoaded", () => {
         // Refresh activities list to show updated participants
         fetchActivities();
       } else {
+        if (response.status === 401) {
+          teacherCredentials = null;
+          updateAuthUI();
+          fetchActivities();
+        }
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
       }
@@ -155,6 +198,52 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  authButton.addEventListener("click", () => {
+    if (teacherCredentials) {
+      teacherCredentials = null;
+      updateAuthUI();
+      fetchActivities();
+    } else {
+      loginError.hidden = true;
+      loginDialog.showModal();
+    }
+  });
+
+  document.getElementById("cancel-login").addEventListener("click", () => {
+    loginDialog.close();
+  });
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    loginError.hidden = true;
+    const username = document.getElementById("teacher-username").value;
+    const password = document.getElementById("teacher-password").value;
+
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { Authorization: authorizationHeader(username, password) },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        loginError.textContent = result.detail || "Unable to log in.";
+        loginError.hidden = false;
+        return;
+      }
+
+      teacherCredentials = { username, password };
+      loginForm.reset();
+      loginDialog.close();
+      updateAuthUI();
+      fetchActivities();
+    } catch (error) {
+      loginError.textContent = "Login failed. Please try again.";
+      loginError.hidden = false;
+      console.error("Error logging in:", error);
+    }
+  });
+
   // Initialize app
+  updateAuthUI();
   fetchActivities();
 });
