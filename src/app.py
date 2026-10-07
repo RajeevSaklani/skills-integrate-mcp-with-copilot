@@ -5,7 +5,11 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+import hashlib
+import hmac
+import json
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
@@ -18,6 +22,55 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+teacher_credentials_file = Path(__file__).with_name("teachers.json")
+teacher_auth = HTTPBasic(auto_error=False)
+
+
+def require_teacher(credentials: HTTPBasicCredentials = Depends(teacher_auth)):
+    unauthorized = HTTPException(
+        status_code=401,
+        detail="Teacher login required",
+        headers={"WWW-Authenticate": "Basic"},
+    )
+    if credentials is None:
+        raise unauthorized
+
+    try:
+        teacher_data = json.loads(teacher_credentials_file.read_text())
+    except FileNotFoundError:
+        teacher_data = {"teachers": {}}
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=500,
+                            detail="Teacher credentials could not be read")
+
+    if not isinstance(teacher_data, dict):
+        raise HTTPException(status_code=500,
+                            detail="Teacher credentials have an invalid format")
+    teachers = teacher_data.get("teachers")
+    if not isinstance(teachers, dict):
+        raise HTTPException(status_code=500,
+                            detail="Teacher credentials have an invalid format")
+
+    teacher = teachers.get(credentials.username)
+    if not isinstance(teacher, dict):
+        raise unauthorized
+
+    try:
+        salt = bytes.fromhex(teacher["salt"])
+        expected = bytes.fromhex(teacher["password_hash"])
+        iterations = int(teacher["iterations"])
+        if not 100_000 <= iterations <= 2_000_000:
+            raise ValueError
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", credentials.password.encode("utf-8"), salt, iterations
+        )
+    except (KeyError, TypeError, ValueError):
+        raise unauthorized
+
+    if not hmac.compare_digest(actual, expected):
+        raise unauthorized
+    return credentials.username
 
 # In-memory activity database
 activities = {
@@ -88,8 +141,14 @@ def get_activities():
     return activities
 
 
+@app.post("/auth/login")
+def teacher_login(teacher: str = Depends(require_teacher)):
+    return {"username": teacher}
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(activity_name: str, email: str,
+                        teacher: str = Depends(require_teacher)):
     """Sign up a student for an activity"""
     # Validate activity exists
     if activity_name not in activities:
@@ -111,7 +170,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(activity_name: str, email: str,
+                             teacher: str = Depends(require_teacher)):
     """Unregister a student from an activity"""
     # Validate activity exists
     if activity_name not in activities:
